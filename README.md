@@ -13,7 +13,7 @@ forever run:
 python poller.py forever
 
 
-### The needed AWS IAM policy for this script is:
+### The AWS IAM policy required for this script is:
 ```
 {
   "Version": "2012-10-17",
