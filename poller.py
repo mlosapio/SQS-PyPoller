@@ -5,7 +5,7 @@
 # Description: A simple AWS sqs message poller with configurable logging
 # Author: Roy Feintuch (froyke)
 #
-# Copywrite 2014, Dome9 Security
+# Copywrite 2015, Dome9 Security
 # www.dome9.com - secure your cloud
 # ******************************************************************************
 
@@ -60,7 +60,8 @@ def run():
     AWSKey = config.get('aws', 'key')
     AWSSecret = config.get('aws','secret')
     queueName = config.get('aws', 'queue_name')
-    sqs = boto.connect_sqs(AWSKey, AWSSecret)
+    queueRegion = config.get('aws', 'region')
+    sqs = boto.sqs.connect_to_region(queueRegion, aws_access_key_id=AWSKey, aws_secret_access_key=AWSSecret)
     
     # TODO - proper error handling. Probably faulty IAM configuration
     q = sqs.get_queue(queueName)
