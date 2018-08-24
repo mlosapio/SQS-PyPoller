@@ -1,2 +1,3 @@
-poller.conf.real
-events.log
+poller.conf
+*.log
+venv/*

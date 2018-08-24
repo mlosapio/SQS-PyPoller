@@ -1,15 +1,6 @@
 #!/usr/bin/python
+''' Script to poll SQS queue '''
 
-# ******************************************************************************
-# Name: sqs-py-poller
-# Description: A simple AWS sqs message poller with configurable logging
-# Author: Roy Feintuch (froyke)
-#
-# Copywrite 2015, Dome9 Security
-# www.dome9.com - secure your cloud
-# ******************************************************************************
-
-import boto
 import json
 import time
 import sys
@@ -17,105 +8,118 @@ import socket
 import ConfigParser
 import logging
 from datetime import datetime
+import boto
 from boto.sqs.message import RawMessage
 
-logger = logging.getLogger('poller')
+def setup_logger(name, config, level=logging.INFO):
+    """ Function to set up logging handlers """
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    if config.getboolean('file_logger', 'enabled'):
+        logpath = config.get('file_logger', 'logpath')
+        filehdlr = logging.FileHandler(logpath + name + '.log')
+        filehdlr.setFormatter(formatter)
+        logger.addHandler(filehdlr)
+
+    if config.getboolean('console', 'enabled'):
+        consolehdlr = logging.StreamHandler(sys.stdout)
+        consolehdlr.setLevel(logging.DEBUG)
+        logger.addHandler(consolehdlr)
+
+    if config.getboolean('syslog', 'enabled'):
+        host = config.get('syslog', 'host')
+        port = config.getint('syslog', 'port')
+        sysloghdlr = logging.handlers.SysLogHandler(address=(host, port),
+                                                    socktype=socket.SOCK_DGRAM)
+        sysloghdlr.setFormatter(formatter)
+        sysloghdlr.setLevel(logging.INFO)
+        logger.addHandler(sysloghdlr)
+
+    return logger
+
+def get_queue(config):
+    ''' Get AWS SQS from config '''
+    # Init AWS SQS
+    awskey = config.get('aws', 'key')
+    awssecret = config.get('aws', 'secret')
+    queuename = config.get('aws', 'queue_name')
+    region = config.get('aws', 'region')
+    sqs = boto.sqs.connect_to_region(region, aws_access_key_id=awskey,
+                                     aws_secret_access_key=awssecret)
+    sqsqueue = sqs.get_queue(queuename)
+    return sqsqueue
+
+def process_msg(result, event_logger, compliance_logger):
+    ''' Process log message '''
+    try:
+        msg = json.loads(result.get_body())
+        if "Dome9 Continuous compliance" in msg["Subject"]:
+            compliance_logger.info(msg["Message"])
+        else:
+            event_logger.info(msg["Message"])
+            # result.delete()
+    except:
+        event_logger.exception("Error while handling messge:\n %s'",
+                               (result.get_body()))
+    finally:
+        result.delete()
+        ### this will delete all messages even if their handling failed.
+        ### For additional reliability you can move this to the try block.
+        ### (and then configure dead letter queue to handle 'poisonous messages')
 
 def run():
+    ''' Main loop '''
     print "starting SQS poller script"
-    forever= any("forever" in s for s in sys.argv)
-    if forever: print "running forever "
+    forever = any("forever" in s for s in sys.argv)
+    if forever:
+        print "running forever..."
+
     start = datetime.now()
-    MAX_WORKER_UPTIME_SECONDS = 60 #when not running forever...
-    
-    # load config file
+
+    max_uptime = 60 #when not running forever...
+
+    ### load config file
     config = ConfigParser.ConfigParser()
     config.read("./poller.conf")
-    
-    # Set up logging
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    
-    if config.getboolean('console','enabled'):
-        consoleHdlr = logging.StreamHandler(sys.stdout)
-        consoleHdlr.setLevel(logging.DEBUG)
-        logger.addHandler(consoleHdlr) 
-    
-    if config.getboolean('file_logger','enabled'):
-        logPath = config.get('file_logger','logPath')
-        hdlr = logging.FileHandler(logPath)
-        hdlr.setFormatter(formatter)
-        hdlr.setLevel(logging.INFO)
-        logger.addHandler(hdlr)
-    
-    if config.getboolean('syslog','enabled'):
-        host = config.get('syslog', 'host')
-        port = config.getint('syslog','port')
-        syslogHdlr = logging.handlers.SysLogHandler(address=(host,port), socktype=socket.SOCK_DGRAM)
-        syslogHdlr.setFormatter(formatter)
-        syslogHdlr.setLevel(logging.INFO)
-        logger.addHandler(syslogHdlr) 
-    
-    # Init AWS SQS
-    AWSKey = config.get('aws', 'key')
-    AWSSecret = config.get('aws','secret')
-    queueName = config.get('aws', 'queue_name')
-    queueRegion = config.get('aws', 'region')
-    sqs = boto.sqs.connect_to_region(queueRegion, aws_access_key_id=AWSKey, aws_secret_access_key=AWSSecret)
-    
-    # TODO - proper error handling. Probably faulty IAM configuration
-    q = sqs.get_queue(queueName)
-    if  not q: # fallback for some IAM configurations. see: https://github.com/boto/boto/issues/653
-        logger.debug("could not get Q by name, will try to search all queues")
-        all_queues = sqs.get_all_queues()
-        logger.debug(all_queues)
-        q = [q for q in all_queues if queueName in q.name][0]
-    
-    q.set_message_class(RawMessage)
-    
+
+    ### Create event logging handler
+    event_logger = setup_logger('event', config)
+
+    ### Create compliance logging handler
+    compliance_logger = setup_logger('compliance', config)
+
+    try:
+        queue = get_queue(config)
+        queue.set_message_class(RawMessage)
+    except Exception as error_msg:
+        event_logger.error("Error getting SQS queue: %s", error_msg)
+        sys.exit(1)
+
     # Poll messages loop
     while True:
         result_count = 0
         try:
-            results = q.get_messages(10, wait_time_seconds=20)
+            results = queue.get_messages(10, wait_time_seconds=20)
             result_count = len(results)
-            logger.debug( "Got %s result(s) this time." % result_count)
-    
+            event_logger.debug("Got %s result(s) this time.", result_count)
+
             for result in results:
-                try:
-                    handleMessage(result)
-                    #result.delete()
-                except:
-                    logger.exception("Error while handling messge:\n{}'".format(result.get_body()))
-                finally:
-                    result.delete() #this will delete all messages even if their handling failed. For additional reliability you can move this to the try block. (and then configure dead letter queue to handle 'poisonous messages')
-            
-            #if not forever and len(results) == 0:
-            #    break
-        except (socket.gaierror):
-            time.sleep(30)
+                process_msg(result, event_logger, compliance_logger)
+
         except:
-            logger.exception("Unexpected error. Will retry in 60 seconds")
+            event_logger.exception("Unexpected error. Will retry in 60 seconds")
             time.sleep(60)
+
         finally:
             if not forever:
-                if (datetime.now()-start).total_seconds() > MAX_WORKER_UPTIME_SECONDS:
-                    logger.debug("Worker uptime exceeded. exiting.")
-                    break
-                if result_count==0:
-                    logger.debug("Queue is empty. exiting.")
-                    break
+                if (datetime.now()-start).total_seconds() > max_uptime:
+                    event_logger.debug("Worker uptime exceeded. exiting.")
+                    sys.exit(0)
+                if result_count == 0:
+                    event_logger.debug("Queue is empty. exiting.")
+                    sys.exit(0)
 
-
-def handleMessage(result):
-    '''This is the place to handle each message. 
-    This is the place to customize and write specific message handling logic like sending this message to external system
-    or perfroming addiitonal filtering for specific message types.
-    ''' 
-    msg = json.loads(result.get_body())["Message"] # Assuming this is a JSON SQS message received form SNS. AWS SNS can send raw messages so this line is not needed. See:http://docs.aws.amazon.com/sns/latest/dg/SNSMessageAttributes.html
-    #msg = result.get_body() # this is when you are working in RAW mesage mode.
-    logger.info(msg) # this is the default handling - send to the logger
-
-
-
-if __name__ == '__main__': run()
+if __name__ == '__main__':
+    run()
