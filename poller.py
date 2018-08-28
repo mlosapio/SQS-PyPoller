@@ -13,14 +13,12 @@ from boto.sqs.message import RawMessage
 
 def setup_logger(name, config, level=logging.INFO):
     """ Function to set up logging handlers """
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
     if config.getboolean('file_logger', 'enabled'):
         logpath = config.get('file_logger', 'logpath')
         filehdlr = logging.FileHandler(logpath + name + '.log')
-        filehdlr.setFormatter(formatter)
         logger.addHandler(filehdlr)
 
     if config.getboolean('console', 'enabled'):
@@ -33,7 +31,6 @@ def setup_logger(name, config, level=logging.INFO):
         port = config.getint('syslog', 'port')
         sysloghdlr = logging.handlers.SysLogHandler(address=(host, port),
                                                     socktype=socket.SOCK_DGRAM)
-        sysloghdlr.setFormatter(formatter)
         sysloghdlr.setLevel(logging.INFO)
         logger.addHandler(sysloghdlr)
 
@@ -56,9 +53,9 @@ def process_msg(result, event_logger, compliance_logger):
     try:
         msg = json.loads(result.get_body())
         if "Dome9 Continuous compliance" in msg["Subject"]:
-            compliance_logger.info(msg["Message"])
+            compliance_logger.info(json.dumps(msg))
         else:
-            event_logger.info(msg["Message"])
+            event_logger.info(json.dumps(msg))
             # result.delete()
     except:
         event_logger.exception("Error while handling messge:\n %s'",
